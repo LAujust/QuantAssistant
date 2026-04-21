@@ -8,6 +8,7 @@
 import warnings
 warnings.filterwarnings("ignore")
 import pandas as pd
+import time
 from backtest.engine import BacktestEngine
 from backtest.metrics import calculate_metrics
 from backtest.report import Report
@@ -24,6 +25,7 @@ from utils.logger import get_logger
 from visualization.plot_report import generate_report_chart
 
 logger = get_logger("main")
+now = pd.to_datetime(time.time()).strftime("%Y%m%d")
 
 
 def build_signal_df(price_df: pd.DataFrame, strategy, rebalance_dates) -> pd.DataFrame:
@@ -49,7 +51,7 @@ def run_pipeline():
 
     # 下载数据（如已存在则增量更新）
     start = "20200101"
-    end = "20260410"
+    end = now
     dm.update_assets(start=start, end=end)
 
     # 读取数据
