@@ -51,7 +51,7 @@ DEFAULT_ASSETS = [
     # 全球指数 (通过akshare对应的指数代码)
     {"code": ".INX", "name": "标普500", "asset_type": "global_index", "market": "US"},
     {"code": ".IXIC", "name": "纳斯达克", "asset_type": "global_index", "market": "US"},
-    {"code": "NKY", "name": "日经225", "asset_type": "global_index", "market": "JP"},
+    # {"code": "NKY", "name": "日经225", "asset_type": "global_index", "market": "JP"},
     # 黄金
     {"code": "518880", "name": "黄金ETF", "asset_type": "commodity", "market": "SH"},
     # 债券

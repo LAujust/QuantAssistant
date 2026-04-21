@@ -32,7 +32,7 @@
 
 ```bash
 # 克隆项目后进入目录
-cd MyStrategy
+cd QuantAssistant
 
 # 安装依赖
 pip install -r requirements.txt

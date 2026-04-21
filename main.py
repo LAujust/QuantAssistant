@@ -54,7 +54,7 @@ def run_pipeline():
 
     # 读取数据
     codes = [a["code"] for a in DEFAULT_ASSETS]
-    df = dm.get_data(codes=codes, start="2020-01-01", end="2024-12-31")
+    df = dm.get_data(codes=codes, start=start, end=end)
     if df.empty:
         logger.error("数据库中无数据，请检查数据下载是否成功")
         return
@@ -164,13 +164,15 @@ def run_pipeline():
     # 可视化
     from visualization.plot_returns import plot_nav
     from visualization.plot_drawdown import plot_drawdown
+    
+    result_plot = result_mom
 
-    plot_nav(result_boll["nav_series"], benchmark_nav, title="布林带轮动策略 vs 基准")
-    plot_drawdown(result_boll["nav_series"], title="布林带轮动策略回撤")
+    plot_nav(result_plot["nav_series"], benchmark_nav, title="布林带轮动策略 vs 基准")
+    plot_drawdown(result_plot["nav_series"], title="布林带轮动策略回撤")
     generate_report_chart(
-        result_boll["nav_series"],
+        result_plot["nav_series"],
         benchmark_nav,
-        metrics=metrics_boll,
+        metrics=metrics_mom,
         save_path=f"logs/report_{run_id}.png",
     )
 
