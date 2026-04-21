@@ -13,7 +13,7 @@
 | **因子系统** | 内置动量、RSI、MACD、布林带、ATR、波动率等技术因子，支持 IC/IR 分析、分层回测、相关性检测 |
 | **绩效分析** | 总收益、年化收益、夏普比率、索提诺比率、最大回撤、Calmar、胜率、盈亏比、Alpha/Beta |
 | **可视化** | 净值曲线、回撤填充图、月度收益柱状图、因子分布、IC序列、分层热力图、综合报告仪表盘 |
-| **策略模板** | 等权重配置、动量轮动、风险平价，支持快速扩展自定义策略 |
+| **策略模板** | 等权重配置、动量轮动、风险平价、布林带多因子轮动（估值/动量/波动率/趋势加权），支持快速扩展自定义策略 |
 
 ---
 
@@ -60,7 +60,7 @@ python main.py
 1. **初始化数据库** - 创建 SQLite 表结构，写入默认资产列表
 2. **下载数据** - 通过 akshare 获取各资产历史日线数据（增量更新，避免重复下载）
 3. **计算因子** - 批量计算动量、RSI、MACD、波动率等因子并持久化
-4. **策略回测** - 运行等权重策略与动量轮动策略
+4. **策略回测** - 运行等权重、动量轮动、布林带多因子轮动策略
 5. **生成报告** - 计算绩效指标，生成可视化图表
 
 ### 2. 运行单元测试
@@ -106,7 +106,7 @@ MyStrategy/
 │   └── plot_report.py           # 综合报告仪表盘（2x2 子图组合）
 ├── strategy/
 │   ├── __init__.py
-│   └── template.py              # 策略模板：等权重、动量轮动、风险平价
+│   └── template.py              # 策略模板：等权重、动量轮动、风险平价、布林带多因子轮动
 ├── utils/
 │   ├── __init__.py
 │   ├── logger.py                # 日志工具
@@ -176,6 +176,45 @@ layer_returns = fs.layer_backtest("momentum_20", codes, n_layers=5)
 - 内置因子通过装饰器注册到 `FactorRegistry`，扩展方便
 - `FactorSelector` 提供 IC/IR 分析、分层回测（检验因子单调性）、因子相关性检测
 
+### 策略层 (`strategy/`)
+
+```python
+from strategy.template import BollingerRotationStrategy
+
+# 按资产类型分类：避险资产 vs 风险资产
+safe_assets = ["518880", "511010"]       # 黄金、债券
+risk_assets = ["510300", "510500", "588000", "159915", "510900", "159920", ".INX", ".IXIC", "NKY"]
+
+strategy = BollingerRotationStrategy(
+    safe_assets=safe_assets,
+    risk_assets=risk_assets,
+    window=20,            # 布林带窗口
+    n_std=2.0,            # 布林带标准差倍数
+    val_window=252*3,     # 估值评分窗口（约3年）
+    mom_window=20,        # 动量窗口
+    vol_window=20,        # 波动率窗口
+    trend_window=60,      # 趋势窗口
+    w_val=0.5,            # 估值权重
+    w_mom=0.2,            # 动量权重
+    w_vol=0.1,            # 波动率权重
+    w_trend=0.2,          # 趋势权重
+    buy_quantile=0.2,     # 风险资产低分位买入阈值
+    sell_quantile=0.8,    # 风险资产高分位卖出阈值
+)
+
+# 生成回测权重信号
+signal_df = build_signal_df(price_df, strategy, None)
+
+# 生成实时信号表（不交易，仅诊断）
+signals = strategy.generate_signals(price_df, as_of_date="2024-12-31")
+```
+
+**策略逻辑：**
+- **买入触发**：价格低于布林带下轨，或价格处于历史低分位（风险资产 `buy_quantile`）
+- **卖出触发**：价格高于布林带上轨，或价格处于历史高分位（风险资产 `sell_quantile`）
+- **综合评分**：估值（越低越好）+ 反向动量（跌得越多越好）+ 波动率（越高越好）+ 趋势（越强越好）
+- **市场防御**：当风险资产整体趋势向下时，自动降低风险资产权重、提升避险资产权重
+
 ### 可视化层 (`visualization/`)
 
 ```python
@@ -237,6 +276,28 @@ engine = BacktestEngine()
 result = engine.run(price_df, signal_df, rebalance_freq="M")
 ```
 
+### 进阶示例：布林带多因子轮动
+
+```python
+from strategy.template import BollingerRotationStrategy
+
+strategy = BollingerRotationStrategy(
+    safe_assets=["518880", "511010"],
+    risk_assets=["510300", "510500", ".INX", ".IXIC"],
+    window=20,
+    n_std=2.0,
+    w_val=0.5,
+    w_mom=0.2,
+    w_vol=0.1,
+    w_trend=0.2,
+    buy_quantile=0.2,
+    sell_quantile=0.8,
+)
+signal_df = build_signal_df(price_df, strategy, None)
+engine = BacktestEngine()
+result = engine.run(price_df, signal_df, rebalance_freq="M")
+```
+
 ---
 
 ## 数据库表结构
@@ -262,9 +323,9 @@ result = engine.run(price_df, signal_df, rebalance_freq="M")
 | 创业板ETF | 159915 | A股ETF |
 | H股ETF | 510900 | 港股ETF |
 | 恒生ETF | 159920 | 港股ETF |
-| 标普500 | SPX | 全球指数 |
-| 纳斯达克 | IXIC | 全球指数 |
-| 日经225 | N225 | 全球指数 |
+| 标普500 | .INX | 全球指数 |
+| 纳斯达克 | .IXIC | 全球指数 |
+| 日经225 | NKY | 全球指数 |
 | 黄金ETF | 518880 | 商品 |
 | 国债ETF | 511010 | 债券 |
 

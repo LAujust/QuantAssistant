@@ -1,3 +1,13 @@
-from .template import MomentumRotationStrategy, EqualWeightStrategy
+from .template import (
+    BollingerRotationStrategy,
+    EqualWeightStrategy,
+    MomentumRotationStrategy,
+    RiskParityStrategy,
+)
 
-__all__ = ["MomentumRotationStrategy", "EqualWeightStrategy"]
+__all__ = [
+    "BollingerRotationStrategy",
+    "EqualWeightStrategy",
+    "MomentumRotationStrategy",
+    "RiskParityStrategy",
+]

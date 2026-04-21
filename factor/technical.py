@@ -107,3 +107,31 @@ class VolatilityFactor(BaseFactor):
         returns = df["close"].pct_change()
         vol = returns.rolling(self.window, min_periods=1).std() * np.sqrt(252)
         return vol
+
+
+@FactorRegistry.register("valuation")
+class ValuationFactor(BaseFactor):
+    """估值评分因子: 价格在滚动窗口中的历史分位 (0=高估, 1=低估)"""
+
+    def __init__(self, window: int = 252 * 3):
+        self.window = window
+
+    def calculate(self, df: pd.DataFrame) -> pd.Series:
+        rolling_min = df["close"].rolling(self.window, min_periods=1).min()
+        rolling_max = df["close"].rolling(self.window, min_periods=1).max()
+        denom = rolling_max - rolling_min
+        denom = denom.replace(0, np.nan)
+        score = 1 - (df["close"] - rolling_min) / denom
+        return score.fillna(0.5).clip(0, 1)
+
+
+@FactorRegistry.register("momentum_score")
+class MomentumScoreFactor(BaseFactor):
+    """动量评分因子: 反向动量，跌得越多评分越高 (-1, 1)"""
+
+    def __init__(self, window: int = 20):
+        self.window = window
+
+    def calculate(self, df: pd.DataFrame) -> pd.Series:
+        ret = df["close"] / df["close"].shift(self.window) - 1
+        return (-ret).clip(-1, 1)

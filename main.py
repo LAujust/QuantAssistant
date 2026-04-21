@@ -14,7 +14,11 @@ from backtest.report import Report
 from config.settings import BACKTEST_CONFIG, DEFAULT_ASSETS
 from data.manager import DataManager
 from factor.calculator import FactorCalculator
-from strategy.template import MomentumRotationStrategy, EqualWeightStrategy
+from strategy.template import (
+    BollingerRotationStrategy,
+    EqualWeightStrategy,
+    MomentumRotationStrategy,
+)
 from utils.helpers import generate_run_id
 from utils.logger import get_logger
 from visualization.plot_report import generate_report_chart
@@ -45,7 +49,7 @@ def run_pipeline():
 
     # 下载数据（如已存在则增量更新）
     start = "20200101"
-    end = "20241231"
+    end = "20260410"
     dm.update_assets(start=start, end=end)
 
     # 读取数据
@@ -86,11 +90,31 @@ def run_pipeline():
     engine_mom = BacktestEngine(initial_cash=BACKTEST_CONFIG["initial_cash"])
     result_mom = engine_mom.run(price_df, signal_mom, rebalance_freq="M")
 
+    # 策略C: 布林带多因子轮动
+    safe_assets = [a["code"] for a in DEFAULT_ASSETS if a["asset_type"] in ("commodity", "bond")]
+    risk_assets = [a["code"] for a in DEFAULT_ASSETS if a["asset_type"] not in ("commodity", "bond")]
+    strategy_boll = BollingerRotationStrategy(
+        safe_assets=safe_assets,
+        risk_assets=risk_assets,
+        window=20,
+        n_std=2.0,
+        w_val=0.5,
+        w_mom=0.2,
+        w_vol=0.1,
+        w_trend=0.2,
+        buy_quantile=0.2,
+        sell_quantile=0.8,
+    )
+    signal_boll = build_signal_df(price_df, strategy_boll, None)
+    engine_boll = BacktestEngine(initial_cash=BACKTEST_CONFIG["initial_cash"])
+    result_boll = engine_boll.run(price_df, signal_boll, rebalance_freq="M")
+
     # 基准: 等权买入持有
     benchmark_nav = (price_df.pct_change().mean(axis=1) + 1).cumprod() * BACKTEST_CONFIG["initial_cash"]
 
     logger.info(f"回测完成，等权策略最终净值: {result_eq['nav_series'].iloc[-1]:,.2f}")
     logger.info(f"动量轮动策略最终净值: {result_mom['nav_series'].iloc[-1]:,.2f}")
+    logger.info(f"布林带轮动策略最终净值: {result_boll['nav_series'].iloc[-1]:,.2f}")
 
     # --------------------------------------------------
     # Step 4: 报告与可视化
@@ -124,16 +148,29 @@ def run_pipeline():
     )
     logger.info(f"动量轮动策略指标: {metrics_mom}")
 
+    # 布林带轮动策略报告
+    metrics_boll = calculate_metrics(result_boll["nav_series"], benchmark_nav)
+    report_boll = reporter.generate(
+        run_id=run_id + "_boll",
+        strategy_name="BollingerRotation",
+        start_date=str(price_df.index[0])[:10],
+        end_date=str(price_df.index[-1])[:10],
+        nav_series=result_boll["nav_series"],
+        trades=result_boll["trades"],
+        benchmark_series=benchmark_nav,
+    )
+    logger.info(f"布林带轮动策略指标: {metrics_boll}")
+
     # 可视化
     from visualization.plot_returns import plot_nav
     from visualization.plot_drawdown import plot_drawdown
 
-    plot_nav(result_mom["nav_series"], benchmark_nav, title="动量轮动策略 vs 基准")
-    plot_drawdown(result_mom["nav_series"], title="动量轮动策略回撤")
+    plot_nav(result_boll["nav_series"], benchmark_nav, title="布林带轮动策略 vs 基准")
+    plot_drawdown(result_boll["nav_series"], title="布林带轮动策略回撤")
     generate_report_chart(
-        result_mom["nav_series"],
+        result_boll["nav_series"],
         benchmark_nav,
-        metrics=metrics_mom,
+        metrics=metrics_boll,
         save_path=f"logs/report_{run_id}.png",
     )
 
