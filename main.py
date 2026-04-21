@@ -25,7 +25,7 @@ from utils.logger import get_logger
 from visualization.plot_report import generate_report_chart
 
 logger = get_logger("main")
-now = pd.to_datetime(time.time()).strftime("%Y%m%d")
+now = pd.to_datetime(time.time(), unit="s").strftime("%Y%m%d")
 
 
 def build_signal_df(price_df: pd.DataFrame, strategy, rebalance_dates) -> pd.DataFrame:
@@ -166,15 +166,13 @@ def run_pipeline():
     # 可视化
     from visualization.plot_returns import plot_nav
     from visualization.plot_drawdown import plot_drawdown
-    
-    result_plot = result_mom
 
-    plot_nav(result_plot["nav_series"], benchmark_nav, title="布林带轮动策略 vs 基准")
-    plot_drawdown(result_plot["nav_series"], title="布林带轮动策略回撤")
+    plot_nav(result_boll["nav_series"], benchmark_nav, title="布林带轮动策略 vs 基准")
+    plot_drawdown(result_boll["nav_series"], title="布林带轮动策略回撤")
     generate_report_chart(
-        result_plot["nav_series"],
+        result_boll["nav_series"],
         benchmark_nav,
-        metrics=metrics_mom,
+        metrics=metrics_boll,
         save_path=f"logs/report_{run_id}.png",
     )
 

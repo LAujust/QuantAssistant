@@ -44,7 +44,10 @@ class Portfolio:
         """根据最新价格更新所有持仓市值和总市值"""
         total_position_value = 0.0
         for code, pos in self.positions.items():
-            price = prices.get(code, 0.0)
+            price = prices.get(code)
+            if price is None or price != price:  # 跳过缺失或 NaN 价格
+                total_position_value += pos.market_value
+                continue
             pos.update_price(price)
             total_position_value += pos.market_value
         self.total_value = self.cash + total_position_value
@@ -63,7 +66,9 @@ class Portfolio:
         total_cost = pos.quantity * pos.cost_price + quantity * price
         pos.quantity += quantity
         pos.cost_price = total_cost / pos.quantity if pos.quantity > 0 else 0.0
+        pos.update_price(price)
         self.cash -= cost
+        self.total_value = self.cash + sum(p.market_value for p in self.positions.values())
         return True
 
     def sell(self, code: str, quantity: float, price: float, revenue: float) -> bool:
@@ -79,7 +84,11 @@ class Portfolio:
         pos.quantity -= quantity
         if pos.quantity == 0:
             pos.cost_price = 0.0
+            pos.market_value = 0.0
+        else:
+            pos.update_price(price)
         self.cash += revenue
+        self.total_value = self.cash + sum(p.market_value for p in self.positions.values())
         return True
 
     @property

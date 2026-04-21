@@ -14,8 +14,9 @@ from utils.logger import get_logger
 
 # 根据 AKShare 官方建议，在导入时清理代理环境变量，确保直连国内数据源
 # 参考: AKShare_Error.md - 禁用环境变量中的代理设置
+proxy = 'http://127.0.0.1:7897'
 for _proxy_key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
-    os.environ.pop(_proxy_key, None)
+    os.environ.pop(_proxy_key, proxy)
 os.environ["NO_PROXY"] = "eastmoney.com,sina.com.cn,127.0.0.1,localhost"
 
 logger = get_logger("data.fetcher")

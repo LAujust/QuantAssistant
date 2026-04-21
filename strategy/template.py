@@ -101,7 +101,7 @@ class RiskParityStrategy(BaseStrategy):
 
 
 class BollingerRotationStrategy(BaseStrategy):
-    """布林带多因子轮动策略"""
+    """布林带多因子轮动策略（平滑调仓版）"""
 
     def __init__(
         self,
@@ -119,6 +119,9 @@ class BollingerRotationStrategy(BaseStrategy):
         w_trend: float = 0.2,
         buy_quantile: float = 0.2,
         sell_quantile: float = 0.8,
+        max_position: float = 0.80,      # 最大仓位比例（保留现金）
+        max_turnover: float = 0.15,      # 单期最大权重变化
+        min_weight: float = 0.02,        # 最小非零权重
     ):
         self.safe_assets = frozenset(safe_assets or [])
         self.risk_assets = frozenset(risk_assets or [])
@@ -134,6 +137,9 @@ class BollingerRotationStrategy(BaseStrategy):
         self.w_trend = w_trend
         self.buy_quantile = buy_quantile
         self.sell_quantile = sell_quantile
+        self.max_position = max_position
+        self.max_turnover = max_turnover
+        self.min_weight = min_weight
         self._precomputed = False
         self._bands: Dict[str, tuple] = {}
         self._val_scores: Dict[str, pd.Series] = {}
@@ -141,6 +147,7 @@ class BollingerRotationStrategy(BaseStrategy):
         self._vol_scores: Dict[str, pd.Series] = {}
         self._trend_scores: Dict[str, pd.Series] = {}
         self._quantiles: Dict[str, pd.Series] = {}
+        self._last_weights: Optional[pd.Series] = None
 
     def _precompute_factors(self, price_df: pd.DataFrame) -> None:
         for a in price_df.columns:
@@ -159,10 +166,10 @@ class BollingerRotationStrategy(BaseStrategy):
             ret = series / series.shift(self.mom_window) - 1
             self._mom_scores[a] = (-ret).clip(-1, 1)
 
-            vol = series.pct_change().rolling(self.vol_window, min_periods=1).std()
+            vol = series.pct_change(fill_method=None).rolling(self.vol_window, min_periods=1).std()
             self._vol_scores[a] = (vol - vol.min()) / (vol.max() - vol.min() + 1e-6)
 
-            self._trend_scores[a] = series.pct_change(self.trend_window)
+            self._trend_scores[a] = series.pct_change(self.trend_window, fill_method=None)
             self._quantiles[a] = series.rank(pct=True)
 
         self._precomputed = True
@@ -185,11 +192,16 @@ class BollingerRotationStrategy(BaseStrategy):
     ) -> pd.Series:
         if not self._precomputed:
             self._precompute_factors(price_df)
+            # 首次初始化等权重
+            n = len(price_df.columns)
+            self._last_weights = pd.Series(0.0, index=price_df.columns)
 
         if current_date not in price_df.index:
-            return pd.Series(0.0, index=price_df.columns)
+            return self._last_weights.copy() if self._last_weights is not None else pd.Series(0.0, index=price_df.columns)
 
-        scores = pd.Series(0.0, index=price_df.columns)
+        # 计算当天信号
+        buy_scores = pd.Series(0.0, index=price_df.columns)
+        sell_set = set()
 
         for a in price_df.columns:
             if a not in self._bands:
@@ -206,7 +218,7 @@ class BollingerRotationStrategy(BaseStrategy):
             buy_signal, sell_signal = self._signal_logic(a, price, up, low, quantile)
 
             if sell_signal:
-                continue
+                sell_set.add(a)
             if buy_signal:
                 v = self._val_scores[a].loc[current_date]
                 m = self._mom_scores[a].loc[current_date]
@@ -219,8 +231,9 @@ class BollingerRotationStrategy(BaseStrategy):
                     + self.w_vol * vol * (1 + vol)
                     + self.w_trend * max(trend, 0)
                 )
-                scores[a] = max(score, 0.01)
+                buy_scores[a] = max(score, 0.01)
 
+        # 市场趋势防御
         if self.risk_assets:
             avg_trend = np.nanmean([
                 self._trend_scores[a].loc[current_date]
@@ -228,16 +241,46 @@ class BollingerRotationStrategy(BaseStrategy):
                 if a in self._trend_scores and current_date in self._trend_scores[a].index
             ])
             if avg_trend < 0:
-                for a in scores.index:
+                for a in buy_scores.index:
                     if a in self.risk_assets:
-                        scores[a] *= 0.5
+                        buy_scores[a] *= 0.5
                     elif a in self.safe_assets:
-                        scores[a] *= 2.0
+                        buy_scores[a] *= 2.0
 
-        total = scores.sum()
-        if total > 0:
-            return scores / total
-        return scores
+        # 从上次权重出发进行平滑调整
+        last = self._last_weights.copy()
+        new_weights = last.copy()
+
+        # 1) 卖出信号资产：逐步减仓
+        for a in sell_set:
+            new_weights[a] = max(0.0, new_weights[a] - self.max_turnover)
+
+        # 2) 买入信号资产：基于评分分配，逐步加仓
+        buy_total = buy_scores.sum()
+        if buy_total > 0:
+            buy_target = buy_scores / buy_total * self.max_position
+            for a in buy_scores.index:
+                if buy_scores[a] > 0:
+                    # 向目标靠拢，但每期最多增加 max_turnover
+                    desired = buy_target[a]
+                    current = new_weights[a]
+                    if desired > current:
+                        new_weights[a] = min(desired, current + self.max_turnover)
+                    elif desired < current:
+                        new_weights[a] = max(desired, current - self.max_turnover)
+
+        # 3) 无信号资产保持上次权重（不主动清仓）
+
+        # 4) 过滤极小权重
+        new_weights = new_weights.where(new_weights >= self.min_weight, 0.0)
+
+        # 5) 总仓位上限
+        w_sum = new_weights.sum()
+        if w_sum > self.max_position:
+            new_weights = new_weights / w_sum * self.max_position
+
+        self._last_weights = new_weights.copy()
+        return new_weights
 
     def generate_signals(
         self,
