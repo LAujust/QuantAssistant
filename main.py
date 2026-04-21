@@ -5,8 +5,9 @@
 3. 回测策略
 4. 生成可视化报告
 """
+import warnings
+warnings.filterwarnings("ignore")
 import pandas as pd
-
 from backtest.engine import BacktestEngine
 from backtest.metrics import calculate_metrics
 from backtest.report import Report

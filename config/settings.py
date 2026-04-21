@@ -25,7 +25,7 @@ BACKTEST_CONFIG = {
     "min_commission": 5.0,            # 最低手续费
     "slippage": 0.001,                # 滑点比例 (0.1%)
     "start_date": "2020-01-01",       # 默认回测开始日期
-    "end_date": "2024-12-31",         # 默认回测结束日期
+    "end_date": "2026-04-10",         # 默认回测结束日期
     "benchmark": "000300.SH",         # 默认基准：沪深300
 }
 
@@ -49,9 +49,9 @@ DEFAULT_ASSETS = [
     {"code": "510900", "name": "H股ETF", "asset_type": "hk_etf", "market": "SH"},
     {"code": "159920", "name": "恒生ETF", "asset_type": "hk_etf", "market": "SZ"},
     # 全球指数 (通过akshare对应的指数代码)
-    {"code": "SPX", "name": "标普500", "asset_type": "global_index", "market": "US"},
-    {"code": "IXIC", "name": "纳斯达克", "asset_type": "global_index", "market": "US"},
-    {"code": "N225", "name": "日经225", "asset_type": "global_index", "market": "JP"},
+    {"code": ".INX", "name": "标普500", "asset_type": "global_index", "market": "US"},
+    {"code": ".IXIC", "name": "纳斯达克", "asset_type": "global_index", "market": "US"},
+    {"code": "NKY", "name": "日经225", "asset_type": "global_index", "market": "JP"},
     # 黄金
     {"code": "518880", "name": "黄金ETF", "asset_type": "commodity", "market": "SH"},
     # 债券

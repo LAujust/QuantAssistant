@@ -10,6 +10,15 @@ import pandas as pd
 class DataFetcher:
     """统一数据获取器"""
 
+    # akshare 全球指数代码映射（内部标识 -> akshare 接口代码）
+    # index_us_stock_sina 使用 .INX / .IXIC
+    # index_global_hist_em 使用中文名称（如 "日经225"）
+    GLOBAL_INDEX_MAP = {
+        ".INX": ".INX",              # 标普500
+        ".IXIC": ".IXIC",           # 纳斯达克
+        "NKY": "日经225",           # 日经225 (index_global_hist_em 需中文名)
+    }
+
     def fetch(
         self,
         code: str,
@@ -85,40 +94,44 @@ class DataFetcher:
         df["asset_type"] = asset_type
         df["date"] = pd.to_datetime(df["date"])
 
+        # 按日期范围过滤
+        start_dt = pd.to_datetime(start)
+        end_dt = pd.to_datetime(end)
+        df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+
         return df[["date", "code", "asset_type", "open", "high", "low", "close", "volume", "amount"]]
 
     def _fetch_a_share_etf(self, code: str, start: str, end: str, market: str) -> Optional[pd.DataFrame]:
         """获取A股/港股ETF日线"""
         try:
-            # akshare fund_etf_hist_em 接口需要6位代码和period
             df = ak.fund_etf_hist_em(
                 symbol=code,
                 period="daily",
                 start_date=start.replace("-", ""),
                 end_date=end.replace("-", ""),
-                adjust="qfq",  # 前复权
+                adjust="qfq",
             )
             return df
         except Exception as e:
-            print(f"[DataFetcher] 获取A股ETF {code} 数据失败: {e}")
+            err_msg = str(e)
+            if "Connection" in err_msg or "RemoteDisconnected" in err_msg:
+                print(f"[DataFetcher] 获取A股ETF {code} 数据失败: 网络连接异常，请检查网络后重试")
+            else:
+                print(f"[DataFetcher] 获取A股ETF {code} 数据失败: {e}")
             return None
 
     def _fetch_global_index(self, code: str, start: str, end: str) -> Optional[pd.DataFrame]:
         """获取全球指数日线"""
         try:
+            ak_code = self.GLOBAL_INDEX_MAP.get(code, code)
             # 美股指数通过 sina 接口
-            if code in ("SPX", "IXIC", "DJI"):
-                df = ak.index_us_stock_sina(symbol=code)
-                if "date" not in df.columns.str.lower():
+            if ak_code in (".INX", ".IXIC", ".DJI"):
+                df = ak.index_us_stock_sina(symbol=ak_code)
+                if "date" not in [c.lower() for c in df.columns]:
                     df = df.reset_index()
                 return df
-            # 日经等通过全球指数接口
-            symbol_map = {
-                "N225": "N225",
-                "HSI": "HSI",
-            }
-            symbol = symbol_map.get(code, code)
-            df = ak.index_global_hist(symbol=symbol)
+            # 其他全球指数通过 em 接口
+            df = ak.index_global_hist_em(symbol=ak_code)
             return df
         except Exception as e:
             print(f"[DataFetcher] 获取全球指数 {code} 数据失败: {e}")
@@ -126,12 +139,10 @@ class DataFetcher:
 
     def _fetch_commodity(self, code: str, start: str, end: str, market: str) -> Optional[pd.DataFrame]:
         """获取商品（黄金ETF等）日线"""
-        # 国内黄金ETF通过ETF接口获取
         return self._fetch_a_share_etf(code, start, end, market)
 
     def _fetch_bond(self, code: str, start: str, end: str, market: str) -> Optional[pd.DataFrame]:
         """获取债券ETF日线"""
-        # 国内债券ETF通过ETF接口获取
         return self._fetch_a_share_etf(code, start, end, market)
 
     def fetch_asset_list(self, asset_type: str) -> pd.DataFrame:
