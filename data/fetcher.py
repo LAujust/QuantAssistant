@@ -1,18 +1,61 @@
 """
 数据获取接口：统一封装 akshare，支持多类资产
+包含重试机制与多源备用接口，提升数据获取稳定性
 """
-from typing import Dict, List, Optional
+import functools
+import os
+import time
+from typing import Callable, List, Optional
 
 import akshare as ak
 import pandas as pd
 
+from utils.logger import get_logger
+
+# 根据 AKShare 官方建议，在导入时清理代理环境变量，确保直连国内数据源
+# 参考: AKShare_Error.md - 禁用环境变量中的代理设置
+for _proxy_key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+    os.environ.pop(_proxy_key, None)
+os.environ["NO_PROXY"] = "eastmoney.com,sina.com.cn,127.0.0.1,localhost"
+
+logger = get_logger("data.fetcher")
+
+
+def retry_on_network_error(
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    backoff: float = 2.0,
+    retryable_exceptions: tuple = (Exception,),
+):
+    """指数退避重试装饰器"""
+    def decorator(func: Callable):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = base_delay
+            last_exc = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except retryable_exceptions as e:
+                    last_exc = e
+                    if attempt < max_retries:
+                        logger.warning(
+                            f"[{func.__name__}] 第 {attempt} 次尝试失败: {e}, "
+                            f"{delay:.1f}s 后重试..."
+                        )
+                        time.sleep(delay)
+                        delay *= backoff
+                    else:
+                        logger.error(f"[{func.__name__}] 全部 {max_retries} 次尝试均失败: {e}")
+            raise last_exc
+        return wrapper
+    return decorator
+
 
 class DataFetcher:
-    """统一数据获取器"""
+    """统一数据获取器（含重试与多源备用）"""
 
     # akshare 全球指数代码映射（内部标识 -> akshare 接口代码）
-    # index_us_stock_sina 使用 .INX / .IXIC
-    # index_global_hist_em 使用中文名称（如 "日经225"）
     GLOBAL_INDEX_MAP = {
         ".INX": ".INX",              # 标普500
         ".IXIC": ".IXIC",           # 纳斯达克
@@ -48,27 +91,25 @@ class DataFetcher:
         if df is None or df.empty:
             return pd.DataFrame()
 
-        # 标准化列名
-        df = df.rename(
-            columns={
-                "日期": "date",
-                "开盘": "open",
-                "最高": "high",
-                "最低": "low",
-                "收盘": "close",
-                "成交量": "volume",
-                "成交额": "amount",
-            }
-        )
-        # 处理英文列名（部分接口返回英文）
-        column_map = {
-            "date": "date",
-            "open": "open",
-            "high": "high",
-            "low": "low",
-            "close": "close",
-            "volume": "volume",
-            "amount": "amount",
+        df = self._normalize_columns(df)
+        df = self._filter_by_date(df, start, end)
+        df["code"] = code
+        df["asset_type"] = asset_type
+        df["date"] = pd.to_datetime(df["date"])
+
+        return df[["date", "code", "asset_type", "open", "high", "low", "close", "volume", "amount"]]
+
+    @staticmethod
+    def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """标准化列名"""
+        rename_map = {
+            "日期": "date",
+            "开盘": "open",
+            "最高": "high",
+            "最低": "low",
+            "收盘": "close",
+            "成交量": "volume",
+            "成交额": "amount",
             "Date": "date",
             "Open": "open",
             "High": "high",
@@ -77,9 +118,12 @@ class DataFetcher:
             "Volume": "volume",
             "Amount": "amount",
         }
-        df = df.rename(columns={c: column_map.get(c, c) for c in df.columns})
+        df = df.rename(columns={c: rename_map.get(c, c) for c in df.columns})
 
-        # 确保数值类型
+        # 统一日期类型（sina 接口返回 datetime.date，em 接口返回字符串）
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+
         for col in ["open", "high", "low", "close", "volume"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -88,21 +132,19 @@ class DataFetcher:
         else:
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
 
-        # 过滤无效行
         df = df.dropna(subset=["date", "open", "high", "low", "close"])
-        df["code"] = code
-        df["asset_type"] = asset_type
-        df["date"] = pd.to_datetime(df["date"])
+        return df
 
-        # 按日期范围过滤
+    @staticmethod
+    def _filter_by_date(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+        """按日期范围过滤"""
         start_dt = pd.to_datetime(start)
         end_dt = pd.to_datetime(end)
-        df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+        return df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
 
-        return df[["date", "code", "asset_type", "open", "high", "low", "close", "volume", "amount"]]
-
+    @retry_on_network_error(max_retries=3, base_delay=1.0, backoff=2.0)
     def _fetch_a_share_etf(self, code: str, start: str, end: str, market: str) -> Optional[pd.DataFrame]:
-        """获取A股/港股ETF日线"""
+        """获取A股/港股ETF日线（东方财富主接口 + 新浪备用接口）"""
         try:
             df = ak.fund_etf_hist_em(
                 symbol=code,
@@ -111,31 +153,49 @@ class DataFetcher:
                 end_date=end.replace("-", ""),
                 adjust="qfq",
             )
-            return df
+            if df is not None and not df.empty:
+                logger.info(f"[DataFetcher] fund_etf_hist_em 获取 {code} 成功")
+                return df
         except Exception as e:
-            err_msg = str(e)
-            if "Connection" in err_msg or "RemoteDisconnected" in err_msg:
-                print(f"[DataFetcher] 获取A股ETF {code} 数据失败: 网络连接异常，请检查网络后重试")
-            else:
-                print(f"[DataFetcher] 获取A股ETF {code} 数据失败: {e}")
-            return None
+            logger.warning(f"[DataFetcher] fund_etf_hist_em 获取 {code} 失败: {e}")
 
-    def _fetch_global_index(self, code: str, start: str, end: str) -> Optional[pd.DataFrame]:
-        """获取全球指数日线"""
+        # 备用：新浪接口
         try:
-            ak_code = self.GLOBAL_INDEX_MAP.get(code, code)
-            # 美股指数通过 sina 接口
-            if ak_code in (".INX", ".IXIC", ".DJI"):
+            sina_symbol = f"{market.lower()}{code}"
+            df = ak.fund_etf_hist_sina(symbol=sina_symbol)
+            if df is not None and not df.empty:
+                logger.info(f"[DataFetcher] fund_etf_hist_sina 获取 {code} 成功")
+                return df
+        except Exception as e:
+            logger.error(f"[DataFetcher] fund_etf_hist_sina 获取 {code} 失败: {e}")
+        return None
+
+    @retry_on_network_error(max_retries=3, base_delay=1.0, backoff=2.0)
+    def _fetch_global_index(self, code: str, start: str, end: str) -> Optional[pd.DataFrame]:
+        """获取全球指数日线（多接口适配）"""
+        ak_code = self.GLOBAL_INDEX_MAP.get(code, code)
+
+        # 美股指数通过 sina 接口（相对稳定）
+        if ak_code in (".INX", ".IXIC", ".DJI"):
+            try:
                 df = ak.index_us_stock_sina(symbol=ak_code)
                 if "date" not in [c.lower() for c in df.columns]:
                     df = df.reset_index()
+                logger.info(f"[DataFetcher] index_us_stock_sina 获取 {code} 成功")
                 return df
-            # 其他全球指数通过 em 接口
+            except Exception as e:
+                logger.error(f"[DataFetcher] index_us_stock_sina 获取 {code} 失败: {e}")
+                return None
+
+        # 其他全球指数通过 em 接口（带重试）
+        try:
             df = ak.index_global_hist_em(symbol=ak_code)
-            return df
+            if df is not None and not df.empty:
+                logger.info(f"[DataFetcher] index_global_hist_em 获取 {code} 成功")
+                return df
         except Exception as e:
-            print(f"[DataFetcher] 获取全球指数 {code} 数据失败: {e}")
-            return None
+            logger.error(f"[DataFetcher] index_global_hist_em 获取 {code} 失败: {e}")
+        return None
 
     def _fetch_commodity(self, code: str, start: str, end: str, market: str) -> Optional[pd.DataFrame]:
         """获取商品（黄金ETF等）日线"""
@@ -145,6 +205,7 @@ class DataFetcher:
         """获取债券ETF日线"""
         return self._fetch_a_share_etf(code, start, end, market)
 
+    @retry_on_network_error(max_retries=3, base_delay=1.0, backoff=2.0)
     def fetch_asset_list(self, asset_type: str) -> pd.DataFrame:
         """获取某类资产的代码列表"""
         if asset_type in ("a_share_etf", "hk_etf"):
@@ -154,6 +215,6 @@ class DataFetcher:
                 df["asset_type"] = asset_type
                 return df
             except Exception as e:
-                print(f"[DataFetcher] 获取ETF列表失败: {e}")
+                logger.error(f"[DataFetcher] 获取ETF列表失败: {e}")
                 return pd.DataFrame()
         return pd.DataFrame()
